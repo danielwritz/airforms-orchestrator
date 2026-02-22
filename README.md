@@ -75,7 +75,7 @@ Required dependencies:
 
 ```bash
 npm install express cors dotenv uuid
-npm install @airforms/protocol
+npm install @airforms/ui-schema
 npm install openai
 ```
 
@@ -124,7 +124,7 @@ Primary endpoint.
 {
   "conversationId": "c_123",
   "message": {
-    "role": "user",
+    "type": "user_text",
     "text": "I want to check my insurance."
   }
 }
@@ -196,7 +196,7 @@ The LLM must be constrained to output either:
 * `assistant_message`
 * `ui_frame`
 
-Use structured outputs with JSON schema validation from `@airforms/protocol`.
+Use structured outputs with JSON schema validation from `@airforms/ui-schema`.
 
 The model must NOT output raw HTML.
 
@@ -298,7 +298,7 @@ The following must exist before considering v0 complete:
   4. ui_submit sent
   5. Orchestrator returns final assistant_message
 
-* All protocol objects validate using `@airforms/protocol`
+* All protocol objects validate using `@airforms/ui-schema`
 
 ---
 
@@ -308,7 +308,7 @@ The following must exist before considering v0 complete:
 
 Build the simplest working orchestrator that:
 
-* Imports `@airforms/protocol`
+* Imports `@airforms/ui-schema`
 * Validates frames before returning
 * Routes `ui_submit`
 * Calls LLM with structured outputs

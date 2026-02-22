@@ -1,0 +1,110 @@
+AIRFORMS END-TO-END IMPLEMENTATION SUMMARY (M0/M1/M2)
+Date: 2026-02-22
+
+WHAT WAS IMPLEMENTED
+
+1) UI SCHEMA PACKAGE (@airforms/ui-schema)
+- Added canonical turn transport schemas:
+  - turn_request.schema.json
+  - turn_response.schema.json
+- Added TypeScript types for turn envelopes and message variants.
+- Added validators for turn request/response.
+- Added optional placeholder support in component contract to match renderer usage.
+- Expanded tests:
+  - Positive schema tests for turn request/response
+  - Negative tests for malformed envelopes and unsupported actions
+
+2) RENDERER PACKAGE (@airforms/renderer-react)
+- Aligned renderer types with shared @airforms/ui-schema exports.
+- Fixed component type mismatches (DateInput, TextArea, MapPin-related typing alignment).
+- Fixed strict typing in ChatUIRenderer error map handling.
+- Added build output config (tsconfig.build.json + build script).
+- Added contract tests:
+  - renderer-contract.test.tsx
+  - end-to-end-contract.test.tsx
+- End-to-end contract path now validated:
+  user_text -> ui_frame -> ui_submit -> assistant_message
+
+3) ORCHESTRATOR PACKAGE (@airforms/orchestrator)
+- Created runnable Node/TypeScript orchestrator service with Express.
+- Added POST /turn endpoint with:
+  - inbound schema validation (validateTurnRequest)
+  - outbound schema validation (validateTurnResponse)
+- Implemented deterministic v1 turn logic:
+  - user_text: returns assistant message + insurance lookup frame
+  - ui_submit: merges values, validates flow, returns next assistant message
+- Added in-memory conversation state store.
+- Added tests:
+  - service.test.ts (validation, transitions, action surface)
+  - server.test.ts (HTTP behavior)
+- Updated README contract references to @airforms/ui-schema and user_text message shape.
+- Added orchestrator-specific .gitignore:
+  - node_modules/
+  - dist/
+  - coverage/
+  - .env
+  - .env.*
+  - *.log
+
+CURRENT REGRESSION STATUS
+
+Full regression was rerun and is green:
+- airforms-ui-schema: test PASS (14), build PASS
+- airforms-renderer: test PASS (8), build PASS
+- airforms-orchestrator: test PASS (7), build PASS
+
+HOW TO RUN THE ORCHESTRATOR LOCALLY
+
+Prerequisites:
+- Node.js installed (recommended LTS)
+
+From workspace root:
+1) Install orchestrator dependencies
+   cd airforms-orchestrator
+   npm install
+
+2) Run tests
+   npm test
+
+3) Build
+   npm run build
+
+4) Start server
+   npm start
+
+Server default:
+- http://localhost:3000
+- Endpoint: POST /turn
+
+QUICK MANUAL TEST (POWERSHELL)
+
+1) Initial user_text turn:
+Invoke-RestMethod -Method Post -Uri "http://localhost:3000/turn" -ContentType "application/json" -Body '{"conversationId":"c_demo","message":{"type":"user_text","text":"I want to check my insurance."}}'
+
+Expected result:
+- assistant_message asking for policy details
+- ui_frame with frameId insurance:lookup and primaryAction ui_submit
+
+2) Submit frame values:
+Invoke-RestMethod -Method Post -Uri "http://localhost:3000/turn" -ContentType "application/json" -Body '{"conversationId":"c_demo","message":{"type":"ui_submit","frameId":"insurance:lookup","values":{"policyNumber":"ABC123","dob":"1988-07-01"}}}'
+
+Expected result:
+- assistant_message like "Looking up your policy..."
+- no further ui_frame in this deterministic v1 path
+
+CAN YOU RUN THIS AND SEE SOMETHING?
+
+Yes.
+- You can run the orchestrator server and see JSON responses immediately via PowerShell (commands above), Postman, or curl.
+- The orchestrator currently returns structured JSON, not a standalone browser UI page.
+- The visible UI rendering behavior is validated by the renderer tests and contract integration tests in airforms-renderer.
+
+IF YOU WANT A LIVE VISUAL UI NEXT
+
+Next step would be a tiny local demo app that:
+- sends user_text to POST /turn,
+- renders returned ui_frame with ChatUIRenderer,
+- posts ui_submit back to POST /turn,
+- displays assistant messages in a chat loop.
+
+This is not required for v1 contract completion, but it is straightforward to add.
