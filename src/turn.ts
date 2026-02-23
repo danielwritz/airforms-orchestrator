@@ -12,6 +12,9 @@ type IntentDiagnostics = {
   synthesizedUi: boolean
 }
 
+const DEFAULT_FORM_SENSITIVITY = 10
+const LOW_FORM_SENSITIVITY_THRESHOLD = 2
+
 function buildAssistantMessage(text: string, meta?: Record<string, unknown>): AssistantMessage {
   return {
     type: 'assistant_message',
@@ -153,6 +156,22 @@ function createRequestedUiFrame(requested: SupportedComponentType[], values: Rec
   }
 }
 
+function normalizeFormSensitivity(value?: number): number {
+  if (!Number.isInteger(value)) {
+    return DEFAULT_FORM_SENSITIVITY
+  }
+
+  return Math.min(10, Math.max(1, value))
+}
+
+function shouldHardSuppressUi(formSensitivity: number, explicitRequestedComponents: SupportedComponentType[]): boolean {
+  if (explicitRequestedComponents.length > 0) {
+    return false
+  }
+
+  return formSensitivity <= LOW_FORM_SENSITIVITY_THRESHOLD
+}
+
 function reconcileRequestedComponents(ui: UiFrame | undefined, requested: SupportedComponentType[]): { ui?: UiFrame; diagnostics: IntentDiagnostics } {
   if (requested.length === 0) {
     return {
@@ -253,32 +272,64 @@ export async function resolveTurn(request: TurnRequest, current: ConversationSta
       : { ...current.values }
 
   const explicitRequestedComponents = detectRequestedComponents(request.message.type === 'ui_submit' ? undefined : request.message.text)
+  const formSensitivity = normalizeFormSensitivity(request.formSensitivity)
+  const hardSuppressUi = shouldHardSuppressUi(formSensitivity, explicitRequestedComponents)
 
-  const llmOutput = await gateway.complete({
-    conversationId: request.conversationId,
-    messageType: request.message.type,
-    messageText: request.message.type === 'ui_submit' ? undefined : request.message.text,
-    explicitComponentIntents: explicitRequestedComponents,
-    frameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId,
-    values: nextValues,
-    state: {
-      conversationId: current.conversationId,
+  try {
+    const llmOutput = await gateway.complete({
+      conversationId: request.conversationId,
+      messageType: request.message.type,
+      messageText: request.message.type === 'ui_submit' ? undefined : request.message.text,
+      formSensitivity,
+      explicitComponentIntents: explicitRequestedComponents,
+      frameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId,
       values: nextValues,
-      lastFrameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId
+      state: {
+        conversationId: current.conversationId,
+        values: nextValues,
+        lastFrameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId
+      }
+    })
+
+    const assistantRequestedComponents = hardSuppressUi ? [] : detectRequestedComponents(llmOutput.assistantText)
+    const requestedComponents = mergeRequestedComponents(explicitRequestedComponents, assistantRequestedComponents)
+    const reconciled = reconcileRequestedComponents(hardSuppressUi ? undefined : llmOutput.ui, requestedComponents)
+
+    return {
+      conversationId: request.conversationId,
+      messages: [
+        buildAssistantMessage(llmOutput.assistantText, {
+          componentIntent: reconciled.diagnostics,
+          formSensitivity
+        })
+      ],
+      ui: reconciled.ui
     }
-  })
+  } catch (error) {
+    const fallbackUi = createRequestedUiFrame(explicitRequestedComponents, nextValues)
 
-  const assistantRequestedComponents = detectRequestedComponents(llmOutput.assistantText)
-  const requestedComponents = mergeRequestedComponents(explicitRequestedComponents, assistantRequestedComponents)
-  const reconciled = reconcileRequestedComponents(llmOutput.ui, requestedComponents)
-
-  return {
-    conversationId: request.conversationId,
-    messages: [
-      buildAssistantMessage(llmOutput.assistantText, {
-        componentIntent: reconciled.diagnostics
-      })
-    ],
-    ui: reconciled.ui
+    return {
+      conversationId: request.conversationId,
+      messages: [
+        buildAssistantMessage(
+          fallbackUi
+            ? 'I ran into an issue generating the full response, but I prepared the requested fields so you can continue.'
+            : 'I ran into an issue generating the response right now. Please try again in a moment.',
+          {
+            llmFallback: true,
+            llmError: error instanceof Error ? error.message : String(error),
+            formSensitivity,
+            componentIntent: {
+              requested: explicitRequestedComponents,
+              present: fallbackUi?.components.map((component) => component.type) ?? [],
+              patched: explicitRequestedComponents,
+              missing: [],
+              synthesizedUi: Boolean(fallbackUi)
+            } satisfies IntentDiagnostics
+          }
+        )
+      ],
+      ui: fallbackUi
+    }
   }
 }

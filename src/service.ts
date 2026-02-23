@@ -1,12 +1,33 @@
 import {
   validateTurnRequest,
   validateTurnResponse,
+  type AssistantMessage,
   type TurnRequest,
   type TurnResponse
 } from '@airforms/ui-schema'
 import { OpenAiResponsesGateway, type LlmGateway } from './llm'
 import { InMemoryConversationStore } from './state'
 import { resolveTurn } from './turn'
+
+function buildProtocolFallbackResponse(response: TurnResponse, conversationId: string): TurnResponse {
+  const assistantText =
+    typeof response?.messages?.[0]?.text === 'string' && response.messages[0].text.trim().length > 0
+      ? response.messages[0].text
+      : 'I had trouble formatting that form response, but I can continue in chat. Please try again.'
+
+  const fallbackMessage: AssistantMessage = {
+    type: 'assistant_message',
+    text: assistantText,
+    meta: {
+      protocolFallback: true
+    }
+  }
+
+  return {
+    conversationId,
+    messages: [fallbackMessage]
+  }
+}
 
 export class HttpValidationError extends Error {
   readonly statusCode: number
@@ -46,7 +67,7 @@ export class OrchestratorService {
 
     const responseValidation = validateTurnResponse(response)
     if (!responseValidation.ok) {
-      throw new HttpValidationError('Generated response did not match protocol schema.', 500)
+      return buildProtocolFallbackResponse(response, request.conversationId)
     }
 
     return response

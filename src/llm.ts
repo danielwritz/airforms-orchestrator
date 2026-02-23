@@ -5,6 +5,7 @@ export type LlmGatewayInput = {
   conversationId: string
   messageType: 'user_text' | 'llm_result' | 'ui_submit'
   messageText?: string
+  formSensitivity?: number
   explicitComponentIntents?: Array<Component['type']>
   values: Record<string, unknown>
   frameId?: string
@@ -83,7 +84,7 @@ export class OpenAiResponsesGateway implements LlmGateway {
               {
                 type: 'input_text',
                 text:
-                  'You are an orchestration engine for a chat UI. Return JSON only with keys: assistantText (string) and optional ui. Only include ui when structured input fields are needed. When ui is needed, prefer a complete but concise form (typically 3-6 fields), not a single minimal question. If explicitComponentIntents is present, you must include those component types in ui fields, using the closest valid configuration. Use select for small enumerations and slider for bounded preference/range inputs like budget comfort, urgency, distance, confidence, or flexibility.'
+                  'You are an orchestration engine for a chat UI. Return JSON only with keys: assistantText (string) and optional ui. Only include ui when structured input fields are needed. When ui is needed, prefer a complete but concise form (typically 3-6 fields), if the user asks for a review or indicates a more complex form, attempt to fulfill the request as it was asked, even if it is more than five fields, not a single minimal question. If explicitComponentIntents is present, you must include those component types in ui fields, using the closest valid configuration. Use select for small enumerations and slider for bounded preference/range inputs like budget comfort, urgency, distance, confidence, or flexibility.'
               }
             ]
           },

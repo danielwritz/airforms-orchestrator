@@ -64,4 +64,34 @@ describe('POST /turn', () => {
     expect(response.body.ui?.type).toBe('ui_frame')
     expect(response.body.ui?.primaryAction?.action?.type).toBe('ui_submit')
   })
+
+  it('returns 200 fallback when generated response is schema-invalid', async () => {
+    const service = new OrchestratorService(
+      new InMemoryConversationStore(),
+      createGateway({
+        complete: async () => ({
+          assistantText: 'Please fill this out.',
+          ui: {
+            type: 'ui_frame',
+            version: '2.0',
+            frameId: 'bad:frame',
+            title: 'Bad frame',
+            state: { values: {} },
+            components: [],
+            primaryAction: { label: 'Continue', action: { type: 'ui_submit' } }
+          } as unknown as any
+        })
+      })
+    )
+    const app = createApp(service)
+
+    const response = await request(app).post('/turn').send({
+      conversationId: 'c_protocol_fallback_http',
+      message: { type: 'user_text', text: 'Need planning help.' }
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.body.ui).toBeUndefined()
+    expect(response.body.messages?.[0]?.meta?.protocolFallback).toBe(true)
+  })
 })

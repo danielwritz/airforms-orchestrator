@@ -293,4 +293,118 @@ describe('OrchestratorService', () => {
       })
     ).rejects.toThrow('Invalid turn request payload.')
   })
+
+  it('returns synthesized map_pin ui when gateway fails during map request', async () => {
+    const service = new OrchestratorService(
+      new InMemoryConversationStore(),
+      createGateway({
+        complete: async () => {
+          throw new Error('Upstream LLM error')
+        }
+      })
+    )
+
+    const response = await service.handleTurn({
+      conversationId: 'c_map_fallback',
+      message: { type: 'user_text', text: 'Please show a map so I can drop a pin for pickup.' }
+    })
+
+    expect(response.ui?.type).toBe('ui_frame')
+    expect(response.ui?.components.some((component) => component.type === 'map_pin')).toBe(true)
+    expect(response.messages[0]?.text).toContain('prepared the requested fields')
+
+    const meta = response.messages[0]?.meta as { llmFallback?: boolean } | undefined
+    expect(meta?.llmFallback).toBe(true)
+    expect(validateTurnResponse(response).ok).toBe(true)
+  })
+
+  it('suppresses ui at low form sensitivity when there is no explicit form intent', async () => {
+    const service = new OrchestratorService(
+      new InMemoryConversationStore(),
+      createGateway({
+        complete: async () => ({
+          assistantText: 'I can help with that and here is a form.',
+          ui: {
+            type: 'ui_frame',
+            version: '1.0',
+            frameId: 'travel:collect',
+            title: 'Travel details',
+            state: { values: {} },
+            components: [{ id: 'destination', type: 'text', label: 'Destination', required: true }],
+            primaryAction: { label: 'Continue', action: { type: 'ui_submit' } }
+          }
+        })
+      })
+    )
+
+    const response = await service.handleTurn({
+      conversationId: 'c_low_sensitivity',
+      formSensitivity: 1,
+      message: { type: 'user_text', text: 'Can you help me plan a trip?' }
+    })
+
+    expect(response.ui).toBeUndefined()
+    expect(validateTurnResponse(response).ok).toBe(true)
+  })
+
+  it('still returns ui at low form sensitivity when user explicitly requests form components', async () => {
+    const service = new OrchestratorService(
+      new InMemoryConversationStore(),
+      createGateway({
+        complete: async () => ({
+          assistantText: 'Sure, here is your form.',
+          ui: {
+            type: 'ui_frame',
+            version: '1.0',
+            frameId: 'slider:collect',
+            title: 'Slider details',
+            state: { values: {} },
+            components: [{ id: 'urgency', type: 'number', label: 'Urgency', required: true }],
+            primaryAction: { label: 'Continue', action: { type: 'ui_submit' } }
+          }
+        })
+      })
+    )
+
+    const response = await service.handleTurn({
+      conversationId: 'c_low_sensitivity_explicit',
+      formSensitivity: 1,
+      message: { type: 'user_text', text: 'Give me a form with a slider from 1 to 10.' }
+    })
+
+    expect(response.ui?.type).toBe('ui_frame')
+    expect(response.ui?.components.some((component) => component.type === 'slider')).toBe(true)
+    expect(validateTurnResponse(response).ok).toBe(true)
+  })
+
+  it('returns schema-valid fallback when generated response fails protocol validation', async () => {
+    const service = new OrchestratorService(
+      new InMemoryConversationStore(),
+      createGateway({
+        complete: async () => ({
+          assistantText: 'Please fill this out.',
+          ui: {
+            type: 'ui_frame',
+            version: '2.0',
+            frameId: 'bad:frame',
+            title: 'Bad frame',
+            state: { values: {} },
+            components: [],
+            primaryAction: { label: 'Continue', action: { type: 'ui_submit' } }
+          } as unknown as any
+        })
+      })
+    )
+
+    const response = await service.handleTurn({
+      conversationId: 'c_protocol_fallback',
+      message: { type: 'user_text', text: 'help me plan travel' }
+    })
+
+    expect(response.ui).toBeUndefined()
+    expect(response.messages[0]?.text).toContain('Please fill this out.')
+    const meta = response.messages[0]?.meta as { protocolFallback?: boolean } | undefined
+    expect(meta?.protocolFallback).toBe(true)
+    expect(validateTurnResponse(response).ok).toBe(true)
+  })
 })
