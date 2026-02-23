@@ -4,6 +4,7 @@ import {
   type TurnRequest,
   type TurnResponse
 } from '@airforms/ui-schema'
+import { OpenAiResponsesGateway, type LlmGateway } from './llm'
 import { InMemoryConversationStore } from './state'
 import { resolveTurn } from './turn'
 
@@ -17,9 +18,12 @@ export class HttpValidationError extends Error {
 }
 
 export class OrchestratorService {
-  constructor(private readonly store: InMemoryConversationStore = new InMemoryConversationStore()) {}
+  constructor(
+    private readonly store: InMemoryConversationStore = new InMemoryConversationStore(),
+    private readonly gateway: LlmGateway = new OpenAiResponsesGateway()
+  ) {}
 
-  handleTurn(payload: unknown): TurnResponse {
+  async handleTurn(payload: unknown): Promise<TurnResponse> {
     const validation = validateTurnRequest(payload)
     if (!validation.ok) {
       throw new HttpValidationError('Invalid turn request payload.')
@@ -27,7 +31,7 @@ export class OrchestratorService {
 
     const request = payload as TurnRequest
     const currentState = this.store.getOrCreate(request.conversationId)
-    const response = resolveTurn(request, currentState)
+    const response = await resolveTurn(request, currentState, this.gateway)
 
     const nextValues =
       request.message.type === 'ui_submit'

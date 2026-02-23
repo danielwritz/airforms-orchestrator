@@ -2,7 +2,7 @@
 
 This service is the decision engine between:
 
-1. `@airforms/protocol`
+1. `@airforms/ui-schema`
 2. `@airforms/renderer-react`
 3. An LLM (OpenAI or compatible)
 4. Optional external tools
@@ -10,6 +10,7 @@ This service is the decision engine between:
 It exposes a single API endpoint that:
 
 * Accepts user messages or `ui_submit`
+* Accepts client-LLM handoff via `llm_result`
 * Decides whether to:
 
   * Return a normal assistant message
@@ -93,6 +94,7 @@ Create a `.env` file:
 
 ```
 OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-4.1
 PORT=3000
 ```
 
@@ -124,8 +126,8 @@ Primary endpoint.
 {
   "conversationId": "c_123",
   "message": {
-    "type": "user_text",
-    "text": "I want to check my insurance."
+    "type": "llm_result",
+    "text": "The user is asking to compare flight options and likely needs destination/date inputs."
   }
 }
 ```
@@ -218,6 +220,11 @@ Basic deterministic flow:
    * Else → return assistant_message
 
 Do not overcomplicate v0.
+
+### Component intent guardrails
+
+For explicit component asks, the orchestrator reconciles the model output to match intent.
+In particular, if the user (or assistant text) explicitly asks for a slider, the response UI includes at least one `slider` component even when the model initially returns `number`.
 
 ---
 

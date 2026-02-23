@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import cors from 'cors'
 import express from 'express'
 import { HttpValidationError, OrchestratorService } from './service'
@@ -8,9 +9,9 @@ export function createApp(service = new OrchestratorService()) {
   app.use(cors())
   app.use(express.json())
 
-  app.post('/turn', (request, response) => {
+  app.post('/turn', async (request, response) => {
     try {
-      const payload = service.handleTurn(request.body)
+      const payload = await service.handleTurn(request.body)
       response.status(200).json(payload)
     } catch (error) {
       if (error instanceof HttpValidationError) {

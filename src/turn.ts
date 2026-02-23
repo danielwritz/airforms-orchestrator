@@ -1,45 +1,284 @@
-import type { AssistantMessage, TurnRequest, TurnResponse } from '@airforms/ui-schema'
-import { buildInsuranceLookupFrame, REQUIRED_INSURANCE_FIELDS, type ConversationState } from './types'
+import type { AssistantMessage, Component, TurnRequest, TurnResponse, UiFrame } from '@airforms/ui-schema'
+import type { LlmGateway } from './llm'
+import type { ConversationState } from './types'
 
-function hasNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0
+type SupportedComponentType = Component['type']
+
+type IntentDiagnostics = {
+  requested: SupportedComponentType[]
+  present: SupportedComponentType[]
+  patched: SupportedComponentType[]
+  missing: SupportedComponentType[]
+  synthesizedUi: boolean
 }
 
-function hasRequiredInsuranceFields(values: Record<string, unknown>): boolean {
-  return REQUIRED_INSURANCE_FIELDS.every((field) => hasNonEmptyString(values[field]))
-}
-
-function assistantMessage(text: string): AssistantMessage {
+function buildAssistantMessage(text: string, meta?: Record<string, unknown>): AssistantMessage {
   return {
     type: 'assistant_message',
-    text
+    text,
+    meta
   }
 }
 
-export function resolveTurn(request: TurnRequest, current: ConversationState): TurnResponse {
+function detectRequestedComponents(text?: string): SupportedComponentType[] {
+  if (!text) {
+    return []
+  }
+
+  const lower = text.toLowerCase()
+  const found: SupportedComponentType[] = []
+
+  const includes = (pattern: RegExp) => pattern.test(lower)
+
+  if (includes(/\bsliders?\b|\brange\b|\bscale\b/)) found.push('slider')
+  if (includes(/\bdropdown\b|\bselect\b|\bchoices?\b/)) found.push('select')
+  if (includes(/\bdate\b|\bcalendar\b/)) found.push('date')
+  if (includes(/\bnumber\b|\bnumeric\b|\binteger\b/)) found.push('number')
+  if (includes(/\btextarea\b|\blong text\b|\bparagraph\b|\bdescription\b/)) found.push('textarea')
+  if (includes(/\btext input\b|\btext field\b|\bfree text\b/)) found.push('text')
+  if (includes(/\bmap\b|\bpin\b|\blocation\b|\bcoordinates\b/)) found.push('map_pin')
+  if (includes(/\breview\b|\bsummary\b/)) found.push('review')
+
+  return Array.from(new Set(found))
+}
+
+function mergeRequestedComponents(...groups: SupportedComponentType[][]): SupportedComponentType[] {
+  const merged: SupportedComponentType[] = []
+
+  for (const group of groups) {
+    for (const type of group) {
+      if (!merged.includes(type)) {
+        merged.push(type)
+      }
+    }
+  }
+
+  return merged
+}
+
+function uniqueId(base: string, existing: Set<string>): string {
+  if (!existing.has(base)) {
+    return base
+  }
+
+  let count = 2
+  while (existing.has(`${base}_${count}`)) {
+    count += 1
+  }
+
+  return `${base}_${count}`
+}
+
+function makeRequestedComponent(type: SupportedComponentType, existingIds: Set<string>): Component {
+  if (type === 'slider') {
+    return {
+      id: uniqueId('requested_slider', existingIds),
+      type: 'slider',
+      label: 'Requested slider',
+      required: true,
+      min: 0,
+      max: 100,
+      step: 1
+    }
+  }
+
+  if (type === 'select') {
+    return {
+      id: uniqueId('requested_select', existingIds),
+      type: 'select',
+      label: 'Requested selection',
+      required: true,
+      options: [
+        { label: 'Option A', value: 'option_a' },
+        { label: 'Option B', value: 'option_b' }
+      ]
+    }
+  }
+
+  if (type === 'map_pin') {
+    return {
+      id: uniqueId('requested_location', existingIds),
+      type: 'map_pin',
+      label: 'Requested location',
+      required: true
+    }
+  }
+
+  if (type === 'review') {
+    return {
+      id: uniqueId('requested_review', existingIds),
+      type: 'review',
+      label: 'Requested review'
+    }
+  }
+
+  return {
+    id: uniqueId(`requested_${type}`, existingIds),
+    type,
+    label: `Requested ${type === 'textarea' ? 'details' : type}`,
+    required: true
+  }
+}
+
+function createRequestedUiFrame(requested: SupportedComponentType[], values: Record<string, unknown>): UiFrame | undefined {
+  if (requested.length === 0) {
+    return undefined
+  }
+
+  const ids = new Set<string>()
+  const components = requested.map((type) => {
+    const component = makeRequestedComponent(type, ids)
+    ids.add(component.id)
+    return component
+  })
+
+  const nextValues = { ...values }
+  for (const component of components) {
+    if (component.type === 'slider' && typeof nextValues[component.id] !== 'number') {
+      nextValues[component.id] = component.min
+    }
+  }
+
+  return {
+    type: 'ui_frame',
+    version: '1.0',
+    frameId: 'requested:components',
+    title: 'Requested form components',
+    state: { values: nextValues },
+    components,
+    primaryAction: {
+      label: 'Continue',
+      action: { type: 'ui_submit' }
+    }
+  }
+}
+
+function reconcileRequestedComponents(ui: UiFrame | undefined, requested: SupportedComponentType[]): { ui?: UiFrame; diagnostics: IntentDiagnostics } {
+  if (requested.length === 0) {
+    return {
+      ui,
+      diagnostics: {
+        requested: [],
+        present: [],
+        patched: [],
+        missing: [],
+        synthesizedUi: false
+      }
+    }
+  }
+
+  if (!ui) {
+    const synthesized = createRequestedUiFrame(requested, {})
+    return {
+      ui: synthesized,
+      diagnostics: {
+        requested,
+        present: synthesized?.components.map((component) => component.type) ?? [],
+        patched: requested,
+        missing: [],
+        synthesizedUi: true
+      }
+    }
+  }
+
+  const patchedTypes: SupportedComponentType[] = []
+  const components = [...ui.components]
+  const existingIds = new Set(components.map((component) => component.id))
+  const addComponent = (type: SupportedComponentType) => {
+    const component = makeRequestedComponent(type, existingIds)
+    existingIds.add(component.id)
+    components.push(component)
+    patchedTypes.push(type)
+  }
+
+  const hasType = (type: SupportedComponentType) => components.some((component) => component.type === type)
+
+  for (const type of requested) {
+    if (hasType(type)) {
+      continue
+    }
+
+    if (type === 'slider') {
+      const numberIndex = components.findIndex((component) => component.type === 'number')
+      if (numberIndex >= 0) {
+        const candidate = components[numberIndex]
+        const converted: Component = {
+          id: candidate.id,
+          type: 'slider',
+          label: candidate.label,
+          required: candidate.required,
+          min: 0,
+          max: 100,
+          step: 1
+        }
+        components[numberIndex] = converted
+        patchedTypes.push('slider')
+        continue
+      }
+    }
+
+    addComponent(type)
+  }
+
+  const present = Array.from(new Set(components.map((component) => component.type)))
+  const missing = requested.filter((type) => !present.includes(type))
+
+  const nextValues = { ...ui.state.values }
+  for (const component of components) {
+    if (component.type === 'slider' && typeof nextValues[component.id] !== 'number') {
+      nextValues[component.id] = component.min
+    }
+  }
+
+  return {
+    ui: {
+      ...ui,
+      state: { values: nextValues },
+      components
+    },
+    diagnostics: {
+      requested,
+      present,
+      patched: Array.from(new Set(patchedTypes)),
+      missing,
+      synthesizedUi: false
+    }
+  }
+}
+
+export async function resolveTurn(request: TurnRequest, current: ConversationState, gateway: LlmGateway): Promise<TurnResponse> {
   const nextValues =
     request.message.type === 'ui_submit'
       ? { ...current.values, ...request.message.values }
       : { ...current.values }
 
-  const nextState: ConversationState = {
-    conversationId: current.conversationId,
+  const explicitRequestedComponents = detectRequestedComponents(request.message.type === 'ui_submit' ? undefined : request.message.text)
+
+  const llmOutput = await gateway.complete({
+    conversationId: request.conversationId,
+    messageType: request.message.type,
+    messageText: request.message.type === 'ui_submit' ? undefined : request.message.text,
+    explicitComponentIntents: explicitRequestedComponents,
+    frameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId,
     values: nextValues,
-    lastFrameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId
-  }
-
-  const complete = hasRequiredInsuranceFields(nextState.values)
-
-  if (!complete) {
-    return {
-      conversationId: request.conversationId,
-      messages: [assistantMessage('Please enter your policy details.')],
-      ui: buildInsuranceLookupFrame(nextState.values)
+    state: {
+      conversationId: current.conversationId,
+      values: nextValues,
+      lastFrameId: request.message.type === 'ui_submit' ? request.message.frameId : current.lastFrameId
     }
-  }
+  })
+
+  const assistantRequestedComponents = detectRequestedComponents(llmOutput.assistantText)
+  const requestedComponents = mergeRequestedComponents(explicitRequestedComponents, assistantRequestedComponents)
+  const reconciled = reconcileRequestedComponents(llmOutput.ui, requestedComponents)
 
   return {
     conversationId: request.conversationId,
-    messages: [assistantMessage('Looking up your policy...')]
+    messages: [
+      buildAssistantMessage(llmOutput.assistantText, {
+        componentIntent: reconciled.diagnostics
+      })
+    ],
+    ui: reconciled.ui
   }
 }
